@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: {% if notification_type == 'downtime' %}#dc3545{% elif notification_type == 'high_latency' %}#ffc107{% else %}#28a745{% endif %};
+            color: white;
+            padding: 20px;
+            border-radius: 5px 5px 0 0;
+        }
+        .content {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 0 0 5px 5px;
+        }
+        .info-box {
+            background-color: white;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid {% if notification_type == 'downtime' %}#dc3545{% elif notification_type == 'high_latency' %}#ffc107{% else %}#28a745{% endif %};
+        }
+        .info-row {
+            margin: 10px 0;
+        }
+        .label {
+            font-weight: bold;
+            display: inline-block;
+            width: 120px;
+        }
+        .footer {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            {% if notification_type == 'downtime' %}
+                🔴 Monitor Down
+            {% elif notification_type == 'high_latency' %}
+                ⚠️ High Latency Detected
+            {% else %}
+                ✅ Monitor Resolved
+            {% endif %}
+        </h1>
+    </div>
+    
+    <div class="content">
+        <div class="info-box">
+            <h2>{{ monitor.name }}</h2>
+            <div class="info-row">
+                <span class="label">Target:</span>
+                <span>{{ monitor.target }}</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Check Type:</span>
+                <span>{{ monitor.get_check_type_display }}</span>
+            </div>
+        </div>
+        
+        {% if incident %}
+            <div class="info-box">
+                <h3>Incident Details</h3>
+                {% if notification_type == 'downtime' %}
+                    <div class="info-row">
+                        <span class="label">Started:</span>
+                        <span>{{ incident.started_at|date:"Y-m-d H:i:s" }} UTC</span>
+                    </div>
+                    {% if incident.error_message %}
+                        <div class="info-row">
+                            <span class="label">Error:</span>
+                            <span>{{ incident.error_message }}</span>
+                        </div>
+                    {% endif %}
+                {% elif notification_type == 'high_latency' %}
+                    <div class="info-row">
+                        <span class="label">Response Time:</span>
+                        <span>{{ incident.response_time_ms }}ms</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Threshold:</span>
+                        <span>{{ monitor.high_latency_threshold }}ms</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="label">Started:</span>
+                        <span>{{ incident.started_at|date:"Y-m-d H:i:s" }} UTC</span>
+                    </div>
+                {% else %}
+                    {% if incident.duration_seconds %}
+                        <div class="info-row">
+                            <span class="label">Duration:</span>
+                            <span>{{ incident.duration_seconds|floatformat:0 }} seconds</span>
+                        </div>
+                    {% endif %}
+                    <div class="info-row">
+                        <span class="label">Resolved:</span>
+                        <span>{{ incident.resolved_at|date:"Y-m-d H:i:s" }} UTC</span>
+                    </div>
+                {% endif %}
+            </div>
+        {% endif %}
+        
+        <div class="footer">
+            <p>This is an automated notification from Uptime Monitor</p>
+            <p>Organization: {{ monitor.organization.name }}</p>
+        </div>
+    </div>
+</body>
+</html>

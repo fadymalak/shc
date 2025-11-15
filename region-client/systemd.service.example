@@ -1,0 +1,21 @@
+[Unit]
+Description=Uptime Monitor Region Client
+After=network.target
+
+[Service]
+Type=simple
+User=monitor
+WorkingDirectory=/opt/region-client
+Environment="API_BASE_URL=https://api.example.com"
+Environment="REGION_CODE=us-east-1"
+Environment="API_KEY=your-api-key-here"
+Environment="CACHE_TTL_MINUTES=5"
+Environment="CHECK_INTERVAL=60"
+ExecStart=/usr/bin/python3 /opt/region-client/region_client.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

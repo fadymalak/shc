@@ -1,0 +1,32 @@
+{% if notification_type == 'downtime' %}
+🔴 MONITOR DOWN: {{ monitor.name }}
+{% elif notification_type == 'high_latency' %}
+⚠️ HIGH LATENCY DETECTED: {{ monitor.name }}
+{% else %}
+✅ MONITOR RESOLVED: {{ monitor.name }}
+{% endif %}
+
+Monitor: {{ monitor.name }}
+Target: {{ monitor.target }}
+Check Type: {{ monitor.get_check_type_display }}
+
+{% if incident %}
+INCIDENT DETAILS:
+{% if notification_type == 'downtime' %}
+Started: {{ incident.started_at|date:"Y-m-d H:i:s" }} UTC
+{% if incident.error_message %}
+Error: {{ incident.error_message }}
+{% endif %}
+{% elif notification_type == 'high_latency' %}
+Response Time: {{ incident.response_time_ms }}ms
+Threshold: {{ monitor.high_latency_threshold }}ms
+Started: {{ incident.started_at|date:"Y-m-d H:i:s" }} UTC
+{% else %}
+Duration: {{ incident.duration_seconds|floatformat:0 }} seconds
+Resolved: {{ incident.resolved_at|date:"Y-m-d H:i:s" }} UTC
+{% endif %}
+{% endif %}
+
+---
+This is an automated notification from Uptime Monitor
+Organization: {{ monitor.organization.name }}

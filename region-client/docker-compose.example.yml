@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  region-client-us-east:
+    build: .
+    environment:
+      - API_BASE_URL=https://api.example.com
+      - REGION_CODE=us-east-1
+      - API_KEY=${API_KEY_US_EAST}
+      - CACHE_TTL_MINUTES=5
+      - CHECK_INTERVAL=60
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  region-client-eu-west:
+    build: .
+    environment:
+      - API_BASE_URL=https://api.example.com
+      - REGION_CODE=eu-west-1
+      - API_KEY=${API_KEY_EU_WEST}
+      - CACHE_TTL_MINUTES=5
+      - CHECK_INTERVAL=60
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
