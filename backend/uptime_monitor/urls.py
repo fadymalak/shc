@@ -19,6 +19,7 @@ urlpatterns = [
     path('api/status-pages/', include('status_pages.urls')),
     path('api/regions/', include('regions.urls')),
     path('api/certificates/', include('certificates.urls')),
+    path('api/notifications/', include('notifications.urls')),
 ]
 
 if settings.DEBUG:

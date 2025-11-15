@@ -1,6 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
-import { LogOut, LayoutDashboard, Activity, AlertCircle, Globe, Building2, Shield } from 'lucide-react'
+import { LogOut, LayoutDashboard, Activity, AlertCircle, Globe, Building2, Shield, Bell } from 'lucide-react'
 
 export default function Layout() {
   const location = useLocation()
@@ -13,6 +13,7 @@ export default function Layout() {
     { name: 'Status Pages', href: '/status-pages', icon: Globe },
     { name: 'Organizations', href: '/organizations', icon: Building2 },
     { name: 'Certificates', href: '/certificates', icon: Shield },
+    { name: 'Notifications', href: '/notifications', icon: Bell },
   ]
 
   return (

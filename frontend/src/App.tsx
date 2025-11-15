@@ -7,6 +7,7 @@ import Incidents from './pages/Incidents'
 import StatusPages from './pages/StatusPages'
 import Organizations from './pages/Organizations'
 import Certificates from './pages/Certificates'
+import Notifications from './pages/Notifications'
 import Login from './pages/Login'
 import { useAuthStore } from './store/authStore'
 
@@ -25,6 +26,7 @@ function App() {
             <Route path="status-pages" element={<StatusPages />} />
             <Route path="organizations" element={<Organizations />} />
             <Route path="certificates" element={<Certificates />} />
+            <Route path="notifications" element={<Notifications />} />
           </Route>
         </Routes>
       </BrowserRouter>

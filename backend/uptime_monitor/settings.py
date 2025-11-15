@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'status_pages',
     'regions',
     'certificates',
+    'notifications',
 ]
 
 MIDDLEWARE = [
@@ -177,3 +178,12 @@ CELERY_TIMEZONE = TIME_ZONE
 MONITOR_CHECK_INTERVAL = config('MONITOR_CHECK_INTERVAL', default=60, cast=int)  # seconds
 HIGH_LATENCY_THRESHOLD = config('HIGH_LATENCY_THRESHOLD', default=5000, cast=int)  # milliseconds
 CERTIFICATE_EXPIRY_WARNING_DAYS = config('CERTIFICATE_EXPIRY_WARNING_DAYS', default=30, cast=int)
+
+# Email Settings
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@uptimemonitor.com')
