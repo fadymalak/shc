@@ -4,11 +4,13 @@ This guide explains how to deploy the region client script on servers in differe
 
 ## Overview
 
-The region client is a lightweight Python script that:
+The region client is a lightweight **async Python script** that:
 - Fetches monitors assigned to its region from the API
 - Caches monitor configuration for 5 minutes
-- Performs checks based on monitor configuration
+- Runs each monitor in its own async task for concurrent checking
+- Performs checks based on each monitor's individual check interval (e.g., every 30 seconds)
 - Only reports incidents (downtime or high latency) to reduce API load
+- Can handle hundreds of monitors simultaneously
 
 ## Prerequisites
 

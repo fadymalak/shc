@@ -271,11 +271,12 @@ The platform includes a Python region client script that can be deployed on serv
 - **Systemd Service**: See `region-client/systemd.service.example`
 
 The region client:
-- Fetches monitors assigned to its region
-- Caches configuration for 5 minutes
-- Performs checks based on monitor configuration
-- Only reports incidents (downtime/high latency) to reduce API load
-- Respects individual monitor check intervals
+- **Async/Concurrent**: Uses Python asyncio for concurrent monitor checking
+- **Per-Monitor Tasks**: Each monitor runs in its own async task with its own schedule
+- **High Performance**: Can handle hundreds of monitors simultaneously
+- **Caching**: Caches configuration for 5 minutes to reduce API calls
+- **Smart Reporting**: Only reports incidents (downtime/high latency) to reduce API load
+- **Flexible Intervals**: Respects individual monitor check intervals (e.g., every 30 seconds)
 
 For detailed deployment instructions, see `region-client/DEPLOYMENT.md`
 

@@ -4,12 +4,13 @@ Python script for deploying on servers in different regions to perform uptime ch
 
 ## Features
 
-- Fetches monitors assigned to the region from the API
-- Caches monitor configuration for 5 minutes (configurable)
-- Performs checks based on monitor type (HTTP, DNS, Custom, TCP)
-- Only reports incidents (downtime or high latency) to reduce API load
-- Respects monitor check intervals
-- Graceful shutdown handling
+- **Async/Concurrent Execution**: Uses Python asyncio for concurrent monitor checking
+- **Per-Monitor Scheduling**: Each monitor runs in its own async task with its own check interval
+- **High Performance**: Can handle hundreds of monitors simultaneously
+- **Caching**: Caches monitor configuration for 5 minutes (configurable)
+- **Multiple Check Types**: Supports HTTP, HTTPS, DNS, Custom (keyword), and TCP checks
+- **Incident-Only Reporting**: Only reports incidents (downtime or high latency) to reduce API load
+- **Graceful Shutdown**: Handles shutdown signals properly
 
 ## Installation
 
@@ -136,8 +137,17 @@ docker-compose up -d
 1. **Initialization**: Client connects to API using region code and API key
 2. **Monitor Fetching**: Fetches monitors assigned to this region
 3. **Caching**: Caches monitor configuration for 5 minutes to reduce API calls
-4. **Checking**: Performs checks based on each monitor's check interval
-5. **Reporting**: Only submits results when incidents are detected (downtime or high latency)
+4. **Async Task Creation**: Creates a separate async task for each monitor
+5. **Concurrent Checking**: All monitors check simultaneously, each respecting its own interval
+6. **Reporting**: Only submits results when incidents are detected (downtime or high latency)
+
+### Async Architecture
+
+- Each monitor runs in its own `asyncio.Task`
+- Monitors check independently based on their `check_interval` (e.g., every 30 seconds)
+- All checks run concurrently, not sequentially
+- Cache refresh runs in a separate background task
+- Uses `aiohttp` for async HTTP requests and `aiodns` for async DNS queries
 
 ## Monitor Types Supported
 

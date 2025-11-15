@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Region Client for Uptime Monitor
+Region Client for Uptime Monitor (Async Version)
 Deploy this script on servers in different regions to perform checks from multiple locations.
+Uses async/await for concurrent monitor checking.
 """
 
 import os
 import sys
-import time
-import json
+import asyncio
+import signal
 import socket
 import ssl
-import signal
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass
-from threading import Lock
-import requests
-import dns.resolver
+from asyncio import Lock
+import aiohttp
+import aiodns
 from decouple import config
 
 
@@ -56,122 +56,140 @@ class MonitorCache:
         self.last_fetch: Optional[datetime] = None
         self.lock = Lock()
     
-    def is_expired(self) -> bool:
+    async def is_expired(self) -> bool:
         """Check if cache has expired"""
-        if self.last_fetch is None:
-            return True
-        return datetime.now() - self.last_fetch > timedelta(minutes=self.cache_ttl_minutes)
+        async with self.lock:
+            if self.last_fetch is None:
+                return True
+            return datetime.now() - self.last_fetch > timedelta(minutes=self.cache_ttl_minutes)
     
-    def get_monitors(self) -> Dict[int, MonitorConfig]:
+    async def get_monitors(self) -> Dict[int, MonitorConfig]:
         """Get cached monitors"""
-        with self.lock:
+        async with self.lock:
             return self.monitors.copy()
     
-    def update(self, monitors: List[MonitorConfig]):
+    async def update(self, monitors: List[MonitorConfig]):
         """Update cache with new monitors"""
-        with self.lock:
+        async with self.lock:
             self.monitors = {m.id: m for m in monitors}
             self.last_fetch = datetime.now()
     
-    def clear(self):
+    async def clear(self):
         """Clear cache"""
-        with self.lock:
+        async with self.lock:
             self.monitors = {}
             self.last_fetch = None
 
 
 class RegionClient:
-    """Client for performing checks from a specific region"""
+    """Async client for performing checks from a specific region"""
     
     def __init__(self, api_base_url: str, region_code: str, api_key: str, cache_ttl_minutes: int = 5):
         self.api_base_url = api_base_url.rstrip('/')
         self.region_code = region_code
         self.api_key = api_key
         self.cache = MonitorCache(cache_ttl_minutes)
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'Token {api_key}',
-            'Content-Type': 'application/json',
-        })
         self.running = True
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.dns_resolver: Optional[aiodns.DNSResolver] = None
+        self.monitor_tasks: Dict[int, asyncio.Task] = {}
+        self.last_check_time: Dict[int, float] = {}
     
-    def fetch_monitors(self) -> List[MonitorConfig]:
+    async def __aenter__(self):
+        """Async context manager entry"""
+        headers = {
+            'Authorization': f'Token {self.api_key}',
+            'Content-Type': 'application/json',
+        }
+        timeout = aiohttp.ClientTimeout(total=30)
+        self.session = aiohttp.ClientSession(headers=headers, timeout=timeout)
+        self.dns_resolver = aiodns.DNSResolver()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        if self.session:
+            await self.session.close()
+    
+    async def fetch_monitors(self) -> List[MonitorConfig]:
         """Fetch monitors assigned to this region"""
         try:
             url = f"{self.api_base_url}/api/regions/{self.region_code}/monitors/"
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            
-            # Handle both list and dict responses
-            data = response.json()
-            if isinstance(data, dict) and 'results' in data:
-                monitors_data = data['results']
-            elif isinstance(data, list):
-                monitors_data = data
-            else:
-                monitors_data = [data] if data else []
-            
-            monitors = []
-            for monitor_data in monitors_data:
-                monitor = MonitorConfig(
-                    id=monitor_data['id'],
-                    name=monitor_data['name'],
-                    check_type=monitor_data['check_type'],
-                    target=monitor_data['target'],
-                    expected_status_code=monitor_data.get('expected_status_code'),
-                    expected_keyword=monitor_data.get('expected_keyword'),
-                    expected_dns_record=monitor_data.get('expected_dns_record'),
-                    dns_record_type=monitor_data.get('dns_record_type', 'A'),
-                    timeout=monitor_data.get('timeout', 30),
-                    high_latency_threshold=monitor_data.get('high_latency_threshold', 5000),
-                    check_interval=monitor_data.get('check_interval', 60),
-                )
-                monitors.append(monitor)
-            
-            return monitors
+            async with self.session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                # Handle both list and dict responses
+                if isinstance(data, dict) and 'results' in data:
+                    monitors_data = data['results']
+                elif isinstance(data, list):
+                    monitors_data = data
+                else:
+                    monitors_data = [data] if data else []
+                
+                monitors = []
+                for monitor_data in monitors_data:
+                    monitor = MonitorConfig(
+                        id=monitor_data['id'],
+                        name=monitor_data['name'],
+                        check_type=monitor_data['check_type'],
+                        target=monitor_data['target'],
+                        expected_status_code=monitor_data.get('expected_status_code'),
+                        expected_keyword=monitor_data.get('expected_keyword'),
+                        expected_dns_record=monitor_data.get('expected_dns_record'),
+                        dns_record_type=monitor_data.get('dns_record_type', 'A'),
+                        timeout=monitor_data.get('timeout', 30),
+                        high_latency_threshold=monitor_data.get('high_latency_threshold', 5000),
+                        check_interval=monitor_data.get('check_interval', 60),
+                    )
+                    monitors.append(monitor)
+                
+                return monitors
         except Exception as e:
-            print(f"Error fetching monitors: {e}", file=sys.stderr)
+            print(f"[{datetime.now()}] Error fetching monitors: {e}", file=sys.stderr)
             return []
     
-    def check_http(self, monitor: MonitorConfig) -> CheckResult:
+    async def check_http(self, monitor: MonitorConfig) -> CheckResult:
         """Perform HTTP/HTTPS check"""
-        start_time = time.time()
+        start_time = asyncio.get_event_loop().time()
         try:
-            response = requests.get(
+            timeout = aiohttp.ClientTimeout(total=monitor.timeout)
+            async with self.session.get(
                 monitor.target,
-                timeout=monitor.timeout,
                 allow_redirects=True,
-                verify=True
-            )
-            response_time_ms = int((time.time() - start_time) * 1000)
-            
-            status = 'up'
-            incident_type = None
-            
-            # Check expected status code
-            if monitor.expected_status_code and response.status_code != monitor.expected_status_code:
-                status = 'down'
-                incident_type = 'downtime'
-                error_message = f"Expected status {monitor.expected_status_code}, got {response.status_code}"
-            else:
-                error_message = None
-            
-            # Check for high latency
-            if response_time_ms > monitor.high_latency_threshold:
-                if status == 'up':
-                    status = 'high_latency'
-                    incident_type = 'high_latency'
-            
-            return CheckResult(
-                monitor_id=monitor.id,
-                status=status,
-                response_time_ms=response_time_ms,
-                status_code=response.status_code,
-                error_message=error_message,
-                incident_type=incident_type,
-            )
+                ssl=True,
+                timeout=timeout
+            ) as response:
+                response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                status_code = response.status
+                
+                status = 'up'
+                incident_type = None
+                
+                # Check expected status code
+                if monitor.expected_status_code and status_code != monitor.expected_status_code:
+                    status = 'down'
+                    incident_type = 'downtime'
+                    error_message = f"Expected status {monitor.expected_status_code}, got {status_code}"
+                else:
+                    error_message = None
+                
+                # Check for high latency
+                if response_time_ms > monitor.high_latency_threshold:
+                    if status == 'up':
+                        status = 'high_latency'
+                        incident_type = 'high_latency'
+                
+                return CheckResult(
+                    monitor_id=monitor.id,
+                    status=status,
+                    response_time_ms=response_time_ms,
+                    status_code=status_code,
+                    error_message=error_message,
+                    incident_type=incident_type,
+                )
         except Exception as e:
-            response_time_ms = int((time.time() - start_time) * 1000)
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             return CheckResult(
                 monitor_id=monitor.id,
                 status='down',
@@ -181,18 +199,28 @@ class RegionClient:
                 incident_type='downtime',
             )
     
-    def check_dns(self, monitor: MonitorConfig) -> CheckResult:
+    async def check_dns(self, monitor: MonitorConfig) -> CheckResult:
         """Perform DNS check"""
-        start_time = time.time()
+        start_time = asyncio.get_event_loop().time()
         try:
-            resolver = dns.resolver.Resolver()
-            resolver.timeout = monitor.timeout
-            resolver.lifetime = monitor.timeout
-            
             record_type = monitor.dns_record_type or 'A'
-            answers = resolver.resolve(monitor.target, record_type)
             
-            response_time_ms = int((time.time() - start_time) * 1000)
+            # Convert DNS record type string to aiodns constant
+            dns_type_map = {
+                'A': aiodns.DNS_TYPE_A,
+                'AAAA': aiodns.DNS_TYPE_AAAA,
+                'MX': aiodns.DNS_TYPE_MX,
+                'TXT': aiodns.DNS_TYPE_TXT,
+                'CNAME': aiodns.DNS_TYPE_CNAME,
+            }
+            dns_type = dns_type_map.get(record_type.upper(), aiodns.DNS_TYPE_A)
+            
+            answers = await asyncio.wait_for(
+                self.dns_resolver.query(monitor.target, dns_type),
+                timeout=monitor.timeout
+            )
+            
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             
             status = 'up'
             error_message = None
@@ -201,7 +229,10 @@ class RegionClient:
             if monitor.expected_dns_record:
                 found = False
                 for answer in answers:
-                    if str(answer) == monitor.expected_dns_record:
+                    if hasattr(answer, 'host') and str(answer.host) == monitor.expected_dns_record:
+                        found = True
+                        break
+                    elif str(answer) == monitor.expected_dns_record:
                         found = True
                         break
                 if not found:
@@ -221,8 +252,18 @@ class RegionClient:
                 error_message=error_message,
                 incident_type=incident_type,
             )
+        except asyncio.TimeoutError:
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+            return CheckResult(
+                monitor_id=monitor.id,
+                status='down',
+                response_time_ms=response_time_ms,
+                status_code=None,
+                error_message="DNS query timeout",
+                incident_type='downtime',
+            )
         except Exception as e:
-            response_time_ms = int((time.time() - start_time) * 1000)
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             return CheckResult(
                 monitor_id=monitor.id,
                 status='down',
@@ -232,42 +273,45 @@ class RegionClient:
                 incident_type='downtime',
             )
     
-    def check_custom(self, monitor: MonitorConfig) -> CheckResult:
+    async def check_custom(self, monitor: MonitorConfig) -> CheckResult:
         """Perform custom keyword check"""
-        start_time = time.time()
+        start_time = asyncio.get_event_loop().time()
         try:
-            response = requests.get(
+            timeout = aiohttp.ClientTimeout(total=monitor.timeout)
+            async with self.session.get(
                 monitor.target,
-                timeout=monitor.timeout,
-                allow_redirects=True
-            )
-            response_time_ms = int((time.time() - start_time) * 1000)
-            
-            status = 'up'
-            error_message = None
-            
-            # Check for expected keyword
-            if monitor.expected_keyword:
-                if monitor.expected_keyword.lower() not in response.text.lower():
-                    status = 'down'
-                    error_message = f"Expected keyword '{monitor.expected_keyword}' not found in response"
-            
-            incident_type = None
-            if response_time_ms > monitor.high_latency_threshold:
-                if status == 'up':
-                    status = 'high_latency'
-                    incident_type = 'high_latency'
-            
-            return CheckResult(
-                monitor_id=monitor.id,
-                status=status,
-                response_time_ms=response_time_ms,
-                status_code=response.status_code,
-                error_message=error_message,
-                incident_type=incident_type,
-            )
+                allow_redirects=True,
+                timeout=timeout
+            ) as response:
+                response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                text = await response.text()
+                status_code = response.status
+                
+                status = 'up'
+                error_message = None
+                
+                # Check for expected keyword
+                if monitor.expected_keyword:
+                    if monitor.expected_keyword.lower() not in text.lower():
+                        status = 'down'
+                        error_message = f"Expected keyword '{monitor.expected_keyword}' not found in response"
+                
+                incident_type = None
+                if response_time_ms > monitor.high_latency_threshold:
+                    if status == 'up':
+                        status = 'high_latency'
+                        incident_type = 'high_latency'
+                
+                return CheckResult(
+                    monitor_id=monitor.id,
+                    status=status,
+                    response_time_ms=response_time_ms,
+                    status_code=status_code,
+                    error_message=error_message,
+                    incident_type=incident_type,
+                )
         except Exception as e:
-            response_time_ms = int((time.time() - start_time) * 1000)
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             return CheckResult(
                 monitor_id=monitor.id,
                 status='down',
@@ -277,9 +321,9 @@ class RegionClient:
                 incident_type='downtime',
             )
     
-    def check_tcp(self, monitor: MonitorConfig) -> CheckResult:
+    async def check_tcp(self, monitor: MonitorConfig) -> CheckResult:
         """Perform TCP check"""
-        start_time = time.time()
+        start_time = asyncio.get_event_loop().time()
         try:
             # Parse host and port
             if ':' in monitor.target:
@@ -289,15 +333,24 @@ class RegionClient:
                 host = monitor.target
                 port = 80
             
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(monitor.timeout)
-            result_code = sock.connect_ex((host, port))
-            sock.close()
+            # Use asyncio for TCP connection
+            result_code = 0
+            error_msg = None
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=monitor.timeout
+                )
+                writer.close()
+                await writer.wait_closed()
+            except Exception as e:
+                result_code = 1
+                error_msg = str(e)
             
-            response_time_ms = int((time.time() - start_time) * 1000)
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             
             status = 'up' if result_code == 0 else 'down'
-            error_message = None if result_code == 0 else f"TCP connection failed with code {result_code}"
+            error_message = None if result_code == 0 else (error_msg or "TCP connection failed")
             
             incident_type = None
             if status == 'down':
@@ -314,8 +367,18 @@ class RegionClient:
                 error_message=error_message,
                 incident_type=incident_type,
             )
+        except asyncio.TimeoutError:
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+            return CheckResult(
+                monitor_id=monitor.id,
+                status='down',
+                response_time_ms=response_time_ms,
+                status_code=None,
+                error_message="TCP connection timeout",
+                incident_type='downtime',
+            )
         except Exception as e:
-            response_time_ms = int((time.time() - start_time) * 1000)
+            response_time_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             return CheckResult(
                 monitor_id=monitor.id,
                 status='down',
@@ -325,16 +388,16 @@ class RegionClient:
                 incident_type='downtime',
             )
     
-    def perform_check(self, monitor: MonitorConfig) -> CheckResult:
+    async def perform_check(self, monitor: MonitorConfig) -> CheckResult:
         """Perform check based on monitor type"""
         if monitor.check_type in ['http', 'https']:
-            return self.check_http(monitor)
+            return await self.check_http(monitor)
         elif monitor.check_type == 'dns':
-            return self.check_dns(monitor)
+            return await self.check_dns(monitor)
         elif monitor.check_type == 'custom':
-            return self.check_custom(monitor)
+            return await self.check_custom(monitor)
         elif monitor.check_type == 'tcp':
-            return self.check_tcp(monitor)
+            return await self.check_tcp(monitor)
         else:
             return CheckResult(
                 monitor_id=monitor.id,
@@ -345,7 +408,7 @@ class RegionClient:
                 incident_type='downtime',
             )
     
-    def submit_result(self, result: CheckResult):
+    async def submit_result(self, result: CheckResult):
         """Submit check result to API"""
         try:
             url = f"{self.api_base_url}/api/regions/{self.region_code}/check-results/"
@@ -357,127 +420,139 @@ class RegionClient:
                 'error_message': result.error_message,
                 'incident_type': result.incident_type,
             }
-            response = self.session.post(url, json=data, timeout=10)
-            response.raise_for_status()
-            return True
+            async with self.session.post(url, json=data) as response:
+                response.raise_for_status()
+                return True
         except Exception as e:
-            print(f"Error submitting result for monitor {result.monitor_id}: {e}", file=sys.stderr)
+            print(f"[{datetime.now()}] Error submitting result for monitor {result.monitor_id}: {e}", file=sys.stderr)
             return False
     
-    def refresh_monitors(self):
+    async def refresh_monitors(self):
         """Refresh monitor cache if expired"""
-        if self.cache.is_expired():
+        if await self.cache.is_expired():
             print(f"[{datetime.now()}] Refreshing monitor cache...")
-            monitors = self.fetch_monitors()
+            monitors = await self.fetch_monitors()
             if monitors:
-                self.cache.update(monitors)
+                await self.cache.update(monitors)
                 print(f"[{datetime.now()}] Loaded {len(monitors)} monitors")
+                
+                # Update monitor tasks
+                await self.update_monitor_tasks(monitors)
             else:
                 print(f"[{datetime.now()}] No monitors found or error occurred")
     
-    def run_check_cycle(self):
-        """Run a single check cycle for all monitors"""
-        monitors = self.cache.get_monitors()
+    async def update_monitor_tasks(self, monitors: List[MonitorConfig]):
+        """Update monitor tasks - start new ones, cancel removed ones"""
+        current_monitor_ids = {m.id for m in monitors}
         
-        if not monitors:
-            print(f"[{datetime.now()}] No monitors to check")
-            return
+        # Cancel tasks for monitors that no longer exist
+        for monitor_id in list(self.monitor_tasks.keys()):
+            if monitor_id not in current_monitor_ids:
+                task = self.monitor_tasks.pop(monitor_id)
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
         
-        print(f"[{datetime.now()}] Checking {len(monitors)} monitors...")
-        
-        for monitor in monitors.values():
-            if not self.running:
-                break
-            
+        # Start tasks for new monitors or restart done ones
+        monitors_dict = {m.id: m for m in monitors}
+        for monitor_id, monitor in monitors_dict.items():
+            if monitor_id not in self.monitor_tasks or self.monitor_tasks[monitor_id].done():
+                if monitor_id in self.monitor_tasks:
+                    # Remove done task
+                    self.monitor_tasks.pop(monitor_id)
+                # Create new task
+                self.monitor_tasks[monitor_id] = asyncio.create_task(
+                    self.monitor_loop(monitor)
+                )
+    
+    async def monitor_loop(self, monitor: MonitorConfig):
+        """Individual monitor check loop - runs continuously for each monitor"""
+        while self.running:
             try:
-                result = self.perform_check(monitor)
+                # Perform check
+                result = await self.perform_check(monitor)
+                self.last_check_time[monitor.id] = asyncio.get_event_loop().time()
                 
-                # Only submit if there's an incident (downtime or high latency)
+                # Only submit if there's an incident
                 if result.incident_type:
-                    self.submit_result(result)
+                    await self.submit_result(result)
                     print(f"[{datetime.now()}] Monitor {monitor.name}: {result.status} "
                           f"({result.response_time_ms}ms) - {result.incident_type}")
                 else:
                     print(f"[{datetime.now()}] Monitor {monitor.name}: {result.status} "
                           f"({result.response_time_ms}ms)")
                 
-                # Wait a bit between checks to avoid overwhelming
-                time.sleep(1)
+                # Wait for next check interval
+                await asyncio.sleep(monitor.check_interval)
+                
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                print(f"[{datetime.now()}] Error checking monitor {monitor.name}: {e}", file=sys.stderr)
+                print(f"[{datetime.now()}] Error in monitor loop for {monitor.name}: {e}", file=sys.stderr)
+                # Wait a bit before retrying
+                await asyncio.sleep(5)
     
-    def run(self, check_interval: int = 60):
-        """Main run loop"""
-        print(f"[{datetime.now()}] Starting region client for region: {self.region_code}")
+    async def cache_refresh_loop(self):
+        """Background task to refresh monitor cache periodically"""
+        while self.running:
+            try:
+                await self.refresh_monitors()
+                # Refresh cache every cache TTL minutes
+                await asyncio.sleep(self.cache.cache_ttl_minutes * 60)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"[{datetime.now()}] Error in cache refresh loop: {e}", file=sys.stderr)
+                await asyncio.sleep(60)  # Retry in 1 minute
+    
+    async def run(self):
+        """Main async run loop"""
+        print(f"[{datetime.now()}] Starting async region client for region: {self.region_code}")
         print(f"[{datetime.now()}] API URL: {self.api_base_url}")
-        print(f"[{datetime.now()}] Check interval: {check_interval} seconds")
         print(f"[{datetime.now()}] Cache TTL: {self.cache.cache_ttl_minutes} minutes")
         
         # Initial monitor fetch
-        self.refresh_monitors()
+        await self.refresh_monitors()
         
-        last_check = {}
+        # Start cache refresh task
+        cache_task = asyncio.create_task(self.cache_refresh_loop())
         
-        while self.running:
+        try:
+            # Wait for all monitor tasks
+            if self.monitor_tasks:
+                await asyncio.gather(*self.monitor_tasks.values(), return_exceptions=True)
+            else:
+                # If no monitors, just wait
+                while self.running:
+                    await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            print(f"\n[{datetime.now()}] Shutting down...")
+            self.running = False
+        finally:
+            # Cancel cache refresh task
+            cache_task.cancel()
             try:
-                # Refresh cache if needed
-                self.refresh_monitors()
-                
-                # Get monitors and check which ones need checking
-                monitors = self.cache.get_monitors()
-                now = time.time()
-                
-                monitors_to_check = []
-                for monitor in monitors.values():
-                    last_check_time = last_check.get(monitor.id, 0)
-                    time_since_check = now - last_check_time
-                    
-                    # Check if it's time to check this monitor
-                    if time_since_check >= monitor.check_interval:
-                        monitors_to_check.append(monitor)
-                
-                # Perform checks
-                for monitor in monitors_to_check:
-                    if not self.running:
-                        break
-                    
-                    try:
-                        result = self.perform_check(monitor)
-                        last_check[monitor.id] = now
-                        
-                        # Only submit if there's an incident
-                        if result.incident_type:
-                            self.submit_result(result)
-                            print(f"[{datetime.now()}] Monitor {monitor.name}: {result.status} "
-                                  f"({result.response_time_ms}ms) - {result.incident_type}")
-                        else:
-                            print(f"[{datetime.now()}] Monitor {monitor.name}: {result.status} "
-                                  f"({result.response_time_ms}ms)")
-                        
-                        time.sleep(0.5)  # Small delay between checks
-                    except Exception as e:
-                        print(f"[{datetime.now()}] Error checking monitor {monitor.name}: {e}", file=sys.stderr)
-                
-                # Sleep until next cycle
-                time.sleep(min(check_interval, 10))  # Check at least every 10 seconds
-                
-            except KeyboardInterrupt:
-                print(f"\n[{datetime.now()}] Shutting down...")
-                self.running = False
-                break
-            except Exception as e:
-                print(f"[{datetime.now()}] Error in main loop: {e}", file=sys.stderr)
-                time.sleep(10)
+                await cache_task
+            except asyncio.CancelledError:
+                pass
+            
+            # Cancel all monitor tasks
+            for task in self.monitor_tasks.values():
+                task.cancel()
+            if self.monitor_tasks:
+                await asyncio.gather(*self.monitor_tasks.values(), return_exceptions=True)
 
 
-def main():
-    """Main entry point"""
+async def main_async():
+    """Main async entry point"""
     # Configuration from environment variables
     api_base_url = config('API_BASE_URL', default='http://localhost:8000')
     region_code = config('REGION_CODE', default='')
     api_key = config('API_KEY', default='')
     cache_ttl_minutes = config('CACHE_TTL_MINUTES', default=5, cast=int)
-    check_interval = config('CHECK_INTERVAL', default=60, cast=int)
     
     if not region_code:
         print("Error: REGION_CODE environment variable is required", file=sys.stderr)
@@ -499,10 +574,22 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     try:
-        client.run(check_interval)
+        async with client:
+            await client.run()
     except Exception as e:
         print(f"Fatal error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
+
+
+def main():
+    """Main entry point"""
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print(f"\n[{datetime.now()}] Shutting down...")
+        sys.exit(0)
 
 
 if __name__ == '__main__':
