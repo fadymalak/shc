@@ -54,6 +54,10 @@ A comprehensive uptime monitoring SaaS platform built with Django, PostgreSQL, D
 │       ├── components/     # Reusable components
 │       ├── pages/          # Page components
 │       └── store/          # State management
+├── region-client/          # Region client script (deploy on remote servers)
+│   ├── region_client.py    # Main client script
+│   ├── requirements.txt   # Python dependencies
+│   └── README.md          # Client documentation
 └── docker-compose.yml      # Docker orchestration
 ```
 
@@ -239,14 +243,41 @@ Certificates are automatically checked when HTTPS monitors are verified. Notific
 
 ## Custom Region Clients
 
-To deploy custom clients in different regions:
+The platform includes a Python region client script that can be deployed on servers in different regions.
 
-1. Create a Region in the dashboard
-2. Deploy your custom client application that:
-   - Accepts check requests via API
-   - Performs checks from that region
-   - Returns results to the main platform
-3. Configure the region with the client endpoint and API key
+### Quick Start
+
+1. **Create a Region in the Dashboard**
+   - Go to Regions
+   - Create a new region with a unique code (e.g., `us-east-1`)
+   - Save the API key
+
+2. **Deploy the Region Client**
+   ```bash
+   cd region-client
+   cp .env.example .env
+   # Edit .env with your API_BASE_URL, REGION_CODE, and API_KEY
+   ./run.sh
+   ```
+
+3. **Assign Monitors to Regions**
+   - Go to Monitors
+   - Edit monitors and assign them to the regions you want to check from
+
+### Deployment Options
+
+- **Direct Python**: See `region-client/README.md`
+- **Docker**: See `region-client/Dockerfile` and `docker-compose.example.yml`
+- **Systemd Service**: See `region-client/systemd.service.example`
+
+The region client:
+- Fetches monitors assigned to its region
+- Caches configuration for 5 minutes
+- Performs checks based on monitor configuration
+- Only reports incidents (downtime/high latency) to reduce API load
+- Respects individual monitor check intervals
+
+For detailed deployment instructions, see `region-client/DEPLOYMENT.md`
 
 ## Development
 
